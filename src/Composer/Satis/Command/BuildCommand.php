@@ -22,7 +22,8 @@ use Composer\DependencyResolver\Pool;
 use Composer\DependencyResolver\DefaultPolicy;
 use Composer\Composer;
 use Composer\Config;
-use Composer\Package\Dumper\ArrayDumper;
+//use Composer\Package\Dumper\ArrayDumper;
+use Composer\Satis\ArrayDumper;
 use Composer\Package\AliasPackage;
 use Composer\Package\BasePackage;
 use Composer\Package\LinkConstraint\VersionConstraint;
@@ -154,7 +155,7 @@ EOT
             $this->dumpDownloads($config, $packages, $input, $output, $outputDir, $skipErrors);
         }
 
-        $filenamePrefix = $outputDir.'/include/all';
+        $filenamePrefix = $outputDir.'/p';
         $filename = $outputDir.'/packages.json';
         if(!empty($packagesFilter)) {
             // in case of an active package filter we need to load the dumped packages.json and merge the
@@ -165,12 +166,16 @@ EOT
         }
 
         $packageFile = $this->dumpPackageIncludeJson($packages, $output, $filenamePrefix);
-        $packageFileHash = hash_file('sha1', $packageFile);
+        $packageFileHash = hash_file('sha256', $packageFile);
 
+        $endpoint = isset($config['archive']['prefix-url']) ? $config['archive']['prefix-url'] : $config['homepage'];
         $includes = array(
-            'include/all$'.$packageFileHash.'.json' => array( 'sha1'=>$packageFileHash ),
+            'providers-url'     => $endpoint.'/p/%package%$%hash%.json',
+            'provider-includes' => array(
+                'p/providers$%hash%.json' => array( 'sha256'=>$packageFileHash )
+            )
         );
-        
+
         $this->dumpPackagesJson($includes, $output, $filename);
 
         if ($htmlView) {
@@ -423,29 +428,43 @@ EOT
     
     private function dumpPackageIncludeJson(array $packages, OutputInterface $output, $filename)
     {
-        $repo = array('packages' => array());
+        $repos = array();
         $dumper = new ArrayDumper;
         foreach ($packages as $package) {
-            $repo['packages'][$package->getPrettyName()][$package->getPrettyVersion()] = $dumper->dump($package);
+            $repos[$package->getName()]['packages'][$package->getPrettyName()][$package->getPrettyVersion()] = $dumper->dump($package);
         }
-        $repoJson = new JsonFile($filename);
-        $repoJson->write($repo);
-        $hash = hash_file('sha1', $filename);
-        $filenameWithHash = $filename.'$'.$hash.'.json';
-        rename($filename, $filenameWithHash);
-        $output->writeln("<info>wrote packages json $filenameWithHash</info>");
+
+        $providers = array();
+        foreach ($repos as $package => $repo) {
+            $packageFilename = $filename . '/' . $package;
+            $repoJson = new JsonFile($packageFilename);
+            $repoJson->write($repo, JsonFile::JSON_UNESCAPED_UNICODE);
+            $hash = hash_file('sha256', $packageFilename);
+            $filenameWithHash = $packageFilename.'$'.$hash.'.json';
+            rename($packageFilename, $filenameWithHash);
+
+            $providers[$package] = array('sha256' => $hash);
+
+            $output->writeln("<info>wrote packages json $filenameWithHash</info>");
+        }
+
+        $packagesFilename = $filename . '/providers';
+        $repoJson = new JsonFile($packagesFilename);
+        $repoJson->write(array('providers' => $providers), JsonFile::JSON_UNESCAPED_UNICODE);
+        $hash = hash_file('sha256', $packagesFilename);
+        $filenameWithHash = $packagesFilename.'$'.$hash.'.json';
+        rename($packagesFilename, $filenameWithHash);
+
         return $filenameWithHash;
     }
     
     private function dumpPackagesJson($includes, OutputInterface $output, $filename){
-        $repo = array(
-            'packages'          => array(),
-            'includes'          => $includes,
-        );
-        
+
+        $repo = array_merge(array('packages' => array()), $includes);
+
         $output->writeln('<info>Writing packages.json</info>');
         $repoJson = new JsonFile($filename);
-        $repoJson->write($repo);
+        $repoJson->write($repo, JsonFile::JSON_UNESCAPED_UNICODE);
     }
 
     private function dumpWeb(array $packages, OutputInterface $output, PackageInterface $rootPackage, $directory, $template = null, array $dependencies = array())
